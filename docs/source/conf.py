@@ -11,22 +11,21 @@ import os
 import sys
 from datetime import datetime
 
-from synthesizer._version import __version__
+# from synthesizer._version import __version__
 
-project = "synthesizer"
+project = "synthpop"
 copyright = (
-    f"{datetime.now().year}, Chris Lovell, Will Roper,"
-    " Aswin Vijayan, Stephen Wilkins"
+    f"{datetime.now().year}, Stephen Wilkins"
 )
-author = "Chris Lovell, Will Roper, Aswin Vijayan, Stephen Wilkins"
-release = __version__
+author = "Stephen Wilkins"
+# release = __version__
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 
 sys.path.insert(
-    0, os.path.abspath("../../synthesizer")
+    0, os.path.abspath("../../synthpop")
 )  # Source code dir relative to this file
 sys.path.insert(
     0, os.path.abspath("../../")
@@ -44,21 +43,21 @@ extensions = [
     # Automatically document param types (less noise in class signature)
     "sphinx_autodoc_typehints",
     "IPython.sphinxext.ipython_console_highlighting",
-    "sphinx_gallery.gen_gallery",
+    # "sphinx_gallery.gen_gallery",
     "sphinx_toolbox.collapse",
     "sphinx_copybutton",  # Add a copy button to code blocks
-    "sphinx_search.extension",  # Search as you type
+    # "sphinx_search.extension",  # Search as you type
 ]
 
 sphinx_gallery_conf = {
-    "examples_dirs": "../../examples",  # path to your example scripts
+    # "examples_dirs": "../../examples",  # path to your example scripts
     # Path to where to save gallery generated output
-    "gallery_dirs": "auto_examples",
+    # "gallery_dirs": "auto_examples",
     "nested_sections": True,
     # Directory where function/class granular galleries are stored
     "backreferences_dir": "_autosummary/backreferences",
     # Modules for which function/class level galleries are created
-    "doc_module": ("synthesizer"),
+    "doc_module": ("synthpop"),
     "abort_on_example_error": True,
     # "show_memory": True,
     # "recommender": {
@@ -69,7 +68,7 @@ sphinx_gallery_conf = {
     # },
 }
 
-autosummary_generate = True  # Turn on sphinx.ext.autosummary
+# autosummary_generate = True  # Turn on sphinx.ext.autosummary
 html_show_sourcelink = (
     False  # Remove 'view source code' from top of page (for html, not python)
 )
@@ -99,28 +98,28 @@ master_doc = "index"
 
 html_static_path = ["_static"]
 
-html_logo = "img/synthesizer_logo.png"
+# html_logo = "img/synthesizer_logo.png"
 
 html_theme = "furo"
 html_theme_options = {
     "sidebar_hide_name": True,
 }
 
-html_title = "Synthesizer"
+html_title = "Synthpop"
 
 # Google Analytics
 # Register the scripts to be included in the HTML <head>.
 # We manually inject the GA4 scripts using html_js_files
 # because the Furo theme does not have a built-in analytics
 # configuration setting.
-html_js_files = [
-    # Load the remote Google Tag Manager library.
-    # The 'async' attribute prevents the script from blocking
-    # page rendering.
-    (
-        "https://www.googletagmanager.com/gtag/js?id=G-CKBVJ4RR3N",
-        {"async": "async"},
-    ),
-    # Load our local configuration file (from _static/google_analytics.js)
-    "google_analytics.js",
-]
+# html_js_files = [
+#     # Load the remote Google Tag Manager library.
+#     # The 'async' attribute prevents the script from blocking
+#     # page rendering.
+#     (
+#         "https://www.googletagmanager.com/gtag/js?id=G-CKBVJ4RR3N",
+#         {"async": "async"},
+#     ),
+#     # Load our local configuration file (from _static/google_analytics.js)
+#     "google_analytics.js",
+# ]
