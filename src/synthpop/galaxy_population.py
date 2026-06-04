@@ -413,15 +413,36 @@ class GalaxyPopulation:
         plt.show()
 
     
+    def get_color(self, spec_id, filter_code1, filter_code2):
+        """
+        Get the color (magnitude difference) between two filters for a given spectrum ID.
+
+        Parameters        ----------
+        spec_id : str
+            The ID of the spectrum to extract photometry from.
+        filter_code1 : str
+            The code of the first filter (e.g., 'FUV').
+        filter_code2 : str
+            The code of the second filter (e.g., 'NUV').
+
+        Returns
+        
+        """
+
+
+        photometry1 = self.get_photometry(spec_id, filter_code1)
+        photometry2 = self.get_photometry(spec_id, filter_code2)
+
+        color = -2.5*np.log10(photometry1/photometry2)
+
+        return color
+
     def plot_color_color_diagram(self, spec_id, filter_codes):
 
         # Extract photometry for the specified spectrum ID and filter codes
-        photometry0 = self.get_photometry(spec_id, filter_codes[0])
-        photometry1 = self.get_photometry(spec_id, filter_codes[1])
-        photometry2 = self.get_photometry(spec_id, filter_codes[2])
-
-        color1 = -2.5*np.log10(photometry0/photometry1)
-        color2 = -2.5*np.log10(photometry1/photometry2)
+        
+        color1 = self.get_color(spec_id, filter_codes[0], filter_codes[1])
+        color2 = self.get_color(spec_id, filter_codes[1], filter_codes[2])
 
         plt.scatter(color1, color2, alpha=0.5, c='k', s=10)
 
