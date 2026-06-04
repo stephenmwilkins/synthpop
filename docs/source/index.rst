@@ -7,14 +7,15 @@ Contents
 ^^^^^^^^
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    
    distribution_functions
    models
    galaxy_populations
    galaxy_populations_observations
    multiple_epoch_galaxy_populations
-   lightcones
+   .. lightcones
+   .. blackholes
 
 
 Citation & Acknowledgement
