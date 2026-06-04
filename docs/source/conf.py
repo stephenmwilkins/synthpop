@@ -98,7 +98,7 @@ master_doc = "index"
 
 html_static_path = ["_static"]
 
-# html_logo = "img/synthesizer_logo.png"
+html_logo = "img/synthpop_logo.png"
 
 html_theme = "furo"
 html_theme_options = {
