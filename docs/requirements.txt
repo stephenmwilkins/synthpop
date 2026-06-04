@@ -4,4 +4,5 @@ sphinx
 sphinx-autodoc-typehints
 sphinx-copybutton
 sphinx-toolbox
+pandoc
 IPython
