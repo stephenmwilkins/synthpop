@@ -2,7 +2,6 @@
 import numpy as np
 from synthesizer.parametric import SFH, ZDist
 from synthpop.distribution_functions import Schechter, Driver2022_DoubleSchechter, Driver2022_SingleSchechter
-
 from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc, dimensionless
 
 class Model:

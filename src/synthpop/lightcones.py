@@ -1,10 +1,8 @@
 import types
-from warnings import filters
 import numpy as np
 from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc, sr, unyt_array
 import matplotlib.pyplot as plt
 from synthesizer.parametric import Stars, Galaxy
-from scipy.interpolate import RegularGridInterpolator
 
 class Lightcone:
 

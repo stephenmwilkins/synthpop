@@ -1,5 +1,3 @@
-from unittest import result
-
 import numpy as np
 from unyt import unyt_array, unyt_quantity, Mpc, Msun
 from unyt.dimensions import mass
