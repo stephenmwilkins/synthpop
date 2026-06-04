@@ -1,0 +1,7 @@
+furo
+nbsphinx
+sphinx
+sphinx-autodoc-typehints
+sphinx-copybutton
+sphinx-toolbox
+IPython
