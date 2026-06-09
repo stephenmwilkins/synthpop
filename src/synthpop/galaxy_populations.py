@@ -3,7 +3,8 @@ import numpy as np
 from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc
 import matplotlib.pyplot as plt
 from synthesizer.parametric import Stars, Galaxy
-
+import pickle
+import dill
 
 class GalaxyPopulation:
 
@@ -80,6 +81,31 @@ class GalaxyPopulation:
         pstr += "-" * 10 + "\n"
         return pstr
 
+    def save(self, filename):
+        """Save the galaxy population object to a file using dill.
+        
+        Dill is required instead of pickle to handle the complex objects 
+        (e.g., functions) that may be present in the model and galaxy 
+        properties.
+        
+        Args:
+            filename (str): The name of the file to save the galaxy 
+            population to.
+        """
+        with open(filename, "wb") as f:
+            dill.dump(self, f)
+
+    @classmethod
+    def load(cls, filename):
+        """Load a galaxy population object from a pickle/dill file.
+        
+        Args:
+            filename (str): The name of the file to load the galaxy 
+            population from.
+        """
+        with open(filename, "rb") as f:
+            return dill.load(f)
+
 
     def _create_galaxies(self):
         """Create galaxy objects with properties sampled from the population."""
@@ -137,21 +163,18 @@ class GalaxyPopulation:
 
         for galaxy in self.galaxies:
 
-            # determine the surviving mass at the target age
-            target_surviving_mass = galaxy.stars.calculate_surviving_mass_at_age(target_age, self.grid) 
-
             # Create the new Stars object
             stars = Stars(
                 self.grid.log10ages,
                 self.grid.metallicities,
                 sf_hist=galaxy.stars.sf_hist,
                 metal_dist=galaxy.stars.metal_dist,
-                surviving_mass=target_surviving_mass,
                 grid=self.grid,
-                age_offset=target_age,
             )
 
-            new_galaxies.append(Galaxy(stars=stars,redshift=redshift))
+            new_stars = stars.get_at_earlier_time(target_age)
+
+            new_galaxies.append(Galaxy(stars=new_stars,redshift=redshift))
 
         return GalaxyPopulation(
             cosmology=self.cosmology,
