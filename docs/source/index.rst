@@ -14,9 +14,6 @@ Contents
    galaxy_populations
    galaxy_populations_observations
    multiple_epoch_galaxy_populations
-   .. lightcones
-   .. blackholes
-
 
 Citation & Acknowledgement
 --------------------------
