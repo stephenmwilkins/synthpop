@@ -21,6 +21,27 @@ class Model:
         self.metal_dist_parameters = metal_dist_parameters
         self.dust_attenuation_function = dust_attenuation_function
 
+    def get_sfh(self, mass, time_array):
+
+        sfh_params = {key: (value(mass) if callable(value) else value) for key, value in self.sfh_parameters.items()}
+        print(f"SFH parameters for mass {mass.to('Msun'):.2e}: {sfh_params}")
+
+        return self.sfh_function(**sfh_params).get_sfr(time_array.to('yr').value) 
+
+    def plot_sfh(self, mass, time_array):
+
+        sfh = self.get_sfh(mass, time_array)
+
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(time_array.to('Gyr'), sfh)
+        plt.xlabel("Time (Gyr)")
+        plt.ylabel("SFR (Msun/yr)")
+        plt.title(f"SFH for Mass = {mass.to('Msun'):.2e}")
+        plt.grid()
+        plt.show()
+
 
 class Default(Model):
     def __init__(self):
@@ -39,6 +60,7 @@ class Default(Model):
         sfh_parameters = {
             "tau": 0.6 * dimensionless,
             "peak_age": 1E10 * yr,
+            "max_age": 1.37E10 * yr
         }
 
         super().__init__(
@@ -48,6 +70,35 @@ class Default(Model):
             metal_dist_function=metal_dist_function,
             metal_dist_parameters=metal_dist_parameters
         )
+
+
+class Spheroid(Model):
+    def __init__(self):
+
+        galaxy_stellar_mass_function = Driver2022_DoubleSchechter
+
+        # Define a delta function for metallicity
+        metal_dist_function = ZDist.DeltaConstant
+
+        metal_dist_parameters = {
+            "log10metallicity": -2.5
+        }
+
+        sfh_function = SFH.DecliningExponential
+
+        sfh_parameters = {
+            "tau": 0.6 * Gyr,
+            "max_age": 1.2E10 * yr,
+        }
+
+        super().__init__(
+            galaxy_stellar_mass_function=galaxy_stellar_mass_function,
+            sfh_function=sfh_function,
+            sfh_parameters=sfh_parameters,
+            metal_dist_function=metal_dist_function,
+            metal_dist_parameters=metal_dist_parameters
+        )
+
 
 
 class Default2(Model):
@@ -105,6 +156,7 @@ class Constant(Model):
         sfh_function = SFH.Constant
 
         sfh_parameters = {
+            "max_age": 1.37E10 * yr
         }       
 
         # Define dust attenuation as a function of stellar mass

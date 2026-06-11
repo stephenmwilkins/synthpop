@@ -3,7 +3,8 @@ import numpy as np
 from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc
 import matplotlib.pyplot as plt
 from synthesizer.parametric import Stars, Galaxy
-
+import pickle
+import dill
 
 class GalaxyPopulation:
 
@@ -28,9 +29,11 @@ class GalaxyPopulation:
 
         self.age_of_the_universe = self.cosmology.age(self.redshift).to("Myr").value * Myr
 
+        # This is used when we are generating a population from a later population
         if galaxies is not None:
             self.galaxies = galaxies
-            self.surviving_masses = np.array([galaxy.stars.surviving_mass.to("Msun").value for galaxy in self.galaxies]) * Msun
+            # need to regenerate the surviving masses with units for later use
+            self.surviving_masses = np.array([galaxy.stars.calculate_surviving_mass(self.grid).to('Msun').value for galaxy in self.galaxies]) * Msun
             self._surviving_masses = self.surviving_masses.to('Msun').value
 
         else:
@@ -61,9 +64,42 @@ class GalaxyPopulation:
         self.total_surviving_stellar_mass_density = self.total_surviving_stellar_mass / self.volume
 
         # Calculate the range of surviving stellar masses in the population
-        self.surviving_mass_range = (self._surviving_masses.min(), self._surviving_masses.max())
+        self.surviving_mass_range = (self.surviving_masses.min(), self.surviving_masses.max()) 
 
+        self._surviving_mass_range = (self._surviving_masses.min(), self._surviving_masses.max())
+
+
+    def __add__(self, other_galaxy_population):
+        """Add two GalaxyPopulation instances together.
+
+        In simple terms this sums the SFZH grids of both Stars instances.
+
+        This will only work for Stars objects with the same SFZH grid axes.
+
+        Args:
+            other_galaxy_population (GalaxyPopulation):
+                The other instance of GalaxyPopulation to add to this one.
+        """
+ 
+        if self.volume != other_galaxy_population.volume:
+            raise ValueError("Cannot add GalaxyPopulation instances with different volumes.")
         
+        if self.cosmology != other_galaxy_population.cosmology:
+            raise ValueError("Cannot add GalaxyPopulation instances with different cosmologies.")
+        
+        if self.redshift != other_galaxy_population.redshift:
+            raise ValueError("Cannot add GalaxyPopulation instances with different redshifts.")
+        
+        if self.grid != other_galaxy_population.grid:
+            raise ValueError("Cannot add GalaxyPopulation instances with different SPS grids.")
+
+        return GalaxyPopulation(
+            volume=self.volume,
+            grid=self.grid,
+            cosmology=self.cosmology,
+            redshift=self.redshift,
+            galaxies=self.galaxies + other_galaxy_population.galaxies
+        )        
 
 
     def __str__(self):
@@ -75,10 +111,35 @@ class GalaxyPopulation:
         pstr += f"Volume: {self.volume.to('Mpc**3'):.2e}" + "\n"
         pstr += f"Redshift: {self.redshift}" + "\n"
         pstr += f"Total stellar mass density: {self.total_surviving_stellar_mass_density.to('Msun/Mpc**3'):.2e}" + "\n"
-        pstr += f"Range of stellar masses: {self.surviving_mass_range[0]:.2e} - {self.surviving_mass_range[1]:.2e}" + "\n"
+        pstr += f"Range of stellar masses: {self.surviving_mass_range[0].to('Msun').value:.2e} - {self.surviving_mass_range[1].to('Msun').value:.2e}" + "\n"
         pstr += f"Age of the universe at z={self.redshift}: {self.age_of_the_universe:.2e}" + "\n"
         pstr += "-" * 10 + "\n"
         return pstr
+
+    def save(self, filename):
+        """Save the galaxy population object to a file using dill.
+        
+        Dill is required instead of pickle to handle the complex objects 
+        (e.g., functions) that may be present in the model and galaxy 
+        properties.
+        
+        Args:
+            filename (str): The name of the file to save the galaxy 
+            population to.
+        """
+        with open(filename, "wb") as f:
+            dill.dump(self, f)
+
+    @classmethod
+    def load(cls, filename):
+        """Load a galaxy population object from a pickle/dill file.
+        
+        Args:
+            filename (str): The name of the file to load the galaxy 
+            population from.
+        """
+        with open(filename, "rb") as f:
+            return dill.load(f)
 
 
     def _create_galaxies(self):
@@ -137,21 +198,9 @@ class GalaxyPopulation:
 
         for galaxy in self.galaxies:
 
-            # determine the surviving mass at the target age
-            target_surviving_mass = galaxy.stars.calculate_surviving_mass_at_age(target_age, self.grid) 
+            new_stars = galaxy.stars.get_at_earlier_time(target_age)
 
-            # Create the new Stars object
-            stars = Stars(
-                self.grid.log10ages,
-                self.grid.metallicities,
-                sf_hist=galaxy.stars.sf_hist,
-                metal_dist=galaxy.stars.metal_dist,
-                surviving_mass=target_surviving_mass,
-                grid=self.grid,
-                age_offset=target_age,
-            )
-
-            new_galaxies.append(Galaxy(stars=stars,redshift=redshift))
+            new_galaxies.append(Galaxy(stars=new_stars,redshift=redshift))
 
         return GalaxyPopulation(
             cosmology=self.cosmology,
@@ -285,7 +334,7 @@ class GalaxyPopulation:
         if hasattr(self.model, "galaxy_stellar_mass_function"):
 
             # Range of masses
-            log_surviving_mass_bins = np.linspace(*np.log10(self.surviving_mass_range), 200)
+            log_surviving_mass_bins = np.linspace(*np.log10(self._surviving_mass_range), 200)
 
             # Evaluate LF
             phi = self.model.galaxy_stellar_mass_function.phi_logx(log_surviving_mass_bins)
@@ -303,7 +352,7 @@ class GalaxyPopulation:
         
         # Plot histogram of sampled GSMF
         
-        log_surviving_mass_bins = np.arange(*np.log10(self.surviving_mass_range), bin_width)
+        log_surviving_mass_bins = np.arange(*np.log10(self._surviving_mass_range), bin_width)
 
         hist, edges = np.histogram(np.log10(self._surviving_masses), bins=log_surviving_mass_bins)
 
@@ -532,11 +581,9 @@ class MultiEpochGalaxyPopulation:
 
         for epoch, redshift in zip(self.epochs, self.redshifts):
 
-            print(epoch.N, epoch.surviving_mass_range)
-
             # Plot histogram of sampled GSMF
             
-            log_surviving_mass_bins = np.arange(*np.log10(epoch.surviving_mass_range), bin_width)
+            log_surviving_mass_bins = np.arange(*np.log10(epoch._surviving_mass_range), bin_width)
 
             hist, edges = np.histogram(np.log10(epoch._surviving_masses), bins=log_surviving_mass_bins)
 

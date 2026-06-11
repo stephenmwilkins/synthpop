@@ -6,3 +6,4 @@ sphinx-copybutton
 sphinx-toolbox
 pandoc
 IPython
+cosmos-synthesizer

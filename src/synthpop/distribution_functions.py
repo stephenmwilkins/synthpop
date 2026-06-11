@@ -5,7 +5,171 @@ import matplotlib.pyplot as plt
 from scipy.special import gammaincc, gamma
 from scipy.integrate import quad
 
-class Common:
+
+
+class BinnedDistributionFunction:
+    def __init__(self, name=None, bin_edges=None, phi=None, x_units=None):
+        """Initialize the binned distribution function.
+        
+        Args:
+            name (str): 
+                Name of the distribution function.
+            bin_edges (array-like): 
+                Bin edges for the quantity being modeled (e.g. luminosity or mass).
+            phi (array-like): 
+                Number density values corresponding to each bin.
+            x_units (str or unyt unit):
+                Units of the quantity being modeled.
+        
+        """
+
+        self.name = name
+        self.bin_edges = bin_edges
+        self.bin_centres = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        self.phi = phi
+        self.x_units = x_units
+
+    def __str__(self):
+        """Print basic summary of the distribution function."""
+        pstr = ""
+        pstr += "-" * 10 + "\n"
+        pstr += "SUMMARY OF BINNED DISTRIBUTION FUNCTION" + "\n"
+        pstr += f"Name: {self.name}" + "\n"
+        for x, phi in zip(self.bin_centres, self.phi):
+            pstr += f"{x:.2e} dex: {phi:.2e}" + "\n"
+        pstr += "-" * 10 + "\n"
+        return pstr
+
+    def sample(self, xmin=0.01, xmax=100, volume=1E6 * Mpc**3):
+        """
+        Sample from a 1D binned distribution function.
+
+        Supports logarithmic binning and limits sampling to xmin <= x <= xmax.
+
+        Args:
+            xmin: minimum sampled value (unyt_quantity)
+            xmax: maximum sampled value (unyt_quantity)
+            volume: sampling volume
+
+        Returns:
+            samples (np.ndarray): sampled values
+        """
+
+        volume = volume.to("Mpc**3").value
+
+        xmin = np.log10(xmin.to(self.x_units).value)
+        xmax = np.log10(xmax.to(self.x_units).value)
+
+        edges = self.bin_edges
+
+        samples = []
+
+        # expected counts per bin
+        lam = self.phi * volume * np.diff(edges) 
+
+        for i, lam_i in enumerate(lam):
+
+            low = edges[i]
+            high = edges[i + 1]
+
+            # clip bin to requested range
+            sample_low = max(low, xmin)
+            sample_high = min(high, xmax)
+
+            # no overlap
+            if sample_low >= sample_high:
+                continue
+
+            # fraction of the bin included
+            if getattr(self, "log_axes", False):
+                frac = (
+                    np.log(sample_high) - np.log(sample_low)
+                ) / (
+                    np.log(high) - np.log(low)
+                )
+            else:
+                frac = (
+                    sample_high - sample_low
+                ) / (
+                    high - low
+                )
+
+            # expected number in the clipped bin
+            n = np.random.poisson(lam_i * frac)
+
+            for _ in range(n):
+
+                if getattr(self, "log_axes", False):
+                    # uniform in log(x)
+                    val = np.exp(
+                        np.random.uniform(
+                            np.log(sample_low),
+                            np.log(sample_high)
+                        )
+                    )
+                else:
+                    # uniform in x
+                    val = np.random.uniform(
+                        sample_low,
+                        sample_high
+                    )
+
+                samples.append(val)
+
+        return 10**np.asarray(samples)
+
+
+    def plot(self, xmin=None, xmax=None, ylimits=None, grid=True, observations=None, samples=None, bins=30, volume=None):
+        """
+        Plot the distribution function.
+
+        Parameters
+        ----------
+        xmin, xmax : float
+            Quantity limits in units of x_star
+        """
+
+        if xmin is None:
+            xmin = 10**self.bin_edges[0]
+        if xmax is None:
+            xmax = 10**self.bin_edges[-1]
+
+        plt.figure(figsize=(8, 5))
+
+        # Plot the binned distribution function in log space
+        # plt.step(np.log10(self.x_bin_centres), np.log10(self.phi), where='mid', label=self.name)
+
+        plt.plot(self.bin_centres, np.log10(self.phi), label='input')
+
+
+        # Plot any samples if provided
+        if samples is not None:
+
+            # Create histogram of samples in log space
+            hist, edges = np.histogram(np.log10(samples), range=[np.log10(xmin), np.log10(xmax)], bins=bins)
+
+            # Calculate bin width in log space
+            bin_width = edges[1] - edges[0]
+
+            # Convert histogram to φ(L)
+            phi_sampled = hist / (bin_width * volume.to("Mpc**3").value) 
+
+            # Plot histogram
+            plt.step(edges[:-1], np.log10(phi_sampled), where='post')
+            
+        if ylimits is not None:
+            plt.ylim(ylimits)
+
+        plt.xlabel("Quantity (e.g. luminosity or mass)")
+        plt.ylabel(r"$\phi$ (number density per unit quantity)")
+        plt.title(f"{self.name} Distribution Function")
+        plt.legend()
+        if grid:
+            plt.grid()
+        plt.show()
+
+
+class ParametricDistributionFunction:
     def __init__(self, name=None, parameters=None, x_units=None):
         self.name = name
         self.parameters = parameters
@@ -15,7 +179,7 @@ class Common:
         """Print basic summary of the distribution function."""
         pstr = ""
         pstr += "-" * 10 + "\n"
-        pstr += "SUMMARY OF DISTRIBUTION FUNCTION" + "\n"
+        pstr += "SUMMARY OF PARAMETRIC DISTRIBUTION FUNCTION" + "\n"
         pstr += f"Name: {self.name}" + "\n"
         for key, value in self.parameters.items():
             pstr += f"{key}: {value}" + "\n"
@@ -205,7 +369,7 @@ class Common:
         plt.show()
 
 
-class Schechter(Common):
+class Schechter(ParametricDistributionFunction):
 
     def __init__(self, phi_star=None, alpha=None, x_star=None):
         """
@@ -245,7 +409,7 @@ class Schechter(Common):
         }
 
         # Instantiate the parent
-        Common.__init__(
+        ParametricDistributionFunction.__init__(
             self,
             name="Schechter",
             parameters=self.parameters,
@@ -352,7 +516,7 @@ class Schechter(Common):
 
 
 
-class DoubleSchechter(Common):
+class DoubleSchechter(ParametricDistributionFunction):
 
     def __init__(
         self,
@@ -407,7 +571,7 @@ class DoubleSchechter(Common):
         }
 
         # Instantiate the parent
-        Common.__init__(
+        ParametricDistributionFunction.__init__(
             self,
             name="DoubleSchechter",
             parameters=self.parameters,
@@ -514,7 +678,7 @@ class DoubleSchechter(Common):
 
 
 
-class DoublePowerLaw(Common):
+class DoublePowerLaw(ParametricDistributionFunction):
     """
     Double power-law distribution function.
 
@@ -580,7 +744,7 @@ class DoublePowerLaw(Common):
             "beta": self.beta,
         }
 
-        Common.__init__(
+        ParametricDistributionFunction.__init__(
             self,
             name="DoublePowerLaw",
             parameters=self.parameters,
