@@ -79,6 +79,8 @@ class Lightcone:
 
         self.N = N
         
+        print(self.N)
+
         self._create_galaxies()
 
         self.surviving_masses = np.array([galaxy.stars.surviving_mass.to("Msun").value for galaxy in self.galaxies]) * Msun
@@ -128,19 +130,8 @@ class Lightcone:
                 grid=self.grid,
             )
 
-            # determine the surviving mass at the target age
-            target_surviving_mass = final_stars.calculate_surviving_mass_at_age(lookback_time, self.grid) 
-
             # Create the new Stars object
-            stars = Stars(
-                self.grid.log10ages,
-                self.grid.metallicities,
-                sf_hist=sfh_model,
-                metal_dist=metal_dist_model,
-                surviving_mass=target_surviving_mass,
-                grid=self.grid,
-                age_offset=lookback_time,
-            )
+            stars = final_stars.get_at_earlier_time(lookback_time)
 
             self.galaxies.append(Galaxy(stars=stars, redshift=redshift))
 
