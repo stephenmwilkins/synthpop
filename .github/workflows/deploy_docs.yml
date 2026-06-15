@@ -29,6 +29,10 @@ jobs:
           pip install wheel
           pip install -r docs/requirements.txt
 
+      - name: Register Jupyter kernel
+        run: |
+          python -m ipykernel install --user --name python3 --display-name "Python 3"
+
       - name: Install pandoc
         run: |
           sudo apt-get update
