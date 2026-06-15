@@ -28,11 +28,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install wheel
           pip install -r docs/requirements.txt
-          
+
       - name: Install pandoc
         run: |
-        sudo apt-get update
-        sudo apt-get install -y pandoc
+          sudo apt-get update
+          sudo apt-get install -y pandoc
 
       - name: Sphinx Build
         run: |
