@@ -8,13 +8,10 @@ on:
       - main
   workflow_dispatch:
 
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v5
 
@@ -31,44 +28,53 @@ jobs:
 
       - name: Register Jupyter kernel
         run: |
-          python -m ipykernel install --user --name python3 --display-name "Python 3"
+          python -m ipykernel install --user \
+            --name python3 \
+            --display-name "Python 3"
 
       - name: Install pandoc
         run: |
           sudo apt-get update
           sudo apt-get install -y pandoc
 
-      - name: Sphinx Build
+      - name: Build docs
         run: |
           cd docs
           make clean
           make html
-          cd ../
 
-      - name: Upload static files as artifact
-        id: deployment
-        uses: actions/upload-pages-artifact@v3
+      - name: Check build output
+        run: |
+          ls -lah docs/build/html
+          test -f docs/build/html/index.html
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: github-pages
-          path: docs/build/html/
+          name: docs-html
+          path: docs/build/html
 
   deploy:
-    environment:
-      name: github-pages
-    runs-on: ubuntu-latest
     needs: build
+
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Download artifact
+      - name: Download docs artifact
         uses: actions/download-artifact@v4
         with:
-          name: github-pages
-          path: docs/build/html/
+          name: docs-html
+
+      - name: Inspect downloaded files
+        run: |
+          pwd
+          find . | head -100
 
       - name: Deploy to stephenmwilkins.github.io/synthpop
         uses: peaceiris/actions-gh-pages@v4
         with:
           personal_token: ${{ secrets.DEPLOY_TOKEN }}
           external_repository: stephenmwilkins/stephenmwilkins.github.io
-          publish_dir: docs/build/html
+          publish_dir: html
           destination_dir: synthpop
           keep_files: false
