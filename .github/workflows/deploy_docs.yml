@@ -27,6 +27,10 @@ jobs:
           pip install -r docs/requirements.txt
           pip install -e .
 
+      - name: Install development branch of synthesizer
+        run: |
+          pip install --upgrade --force-reinstall --no-deps git+https://github.com/synthesizer-project/synthesizer.git@main
+
       - name: Download test data
         run: |
           # Download the data we need
