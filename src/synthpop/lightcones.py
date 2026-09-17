@@ -1,4 +1,5 @@
 import types
+import dill
 import numpy as np
 from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc, sr, unyt_array
 import matplotlib.pyplot as plt
@@ -176,6 +177,27 @@ class Lightcone:
         # pstr += f"Range of surviving stellar masses: {self.surviving_mass_range[0]:.2e} - {self.surviving_mass_range[1]:.2e}" + "\n"
         pstr += "-" * 10 + "\n"
         return pstr
+
+    def save(self, filename):
+        """Save the Lightcone object to a file using dill.
+        
+        Args:
+            filename (str): The name of the file to save the Lightcone 
+            object to.
+        """
+        with open(filename, "wb") as f:
+            dill.dump(self, f)
+
+    @classmethod
+    def load(cls, filename):
+        """Load a Lightcone object from a dill file.
+        
+        Args:
+            filename (str): The name of the file to load the galaxy 
+            population from.
+        """
+        with open(filename, "rb") as f:
+            return dill.load(f)
 
 
     def _create_galaxies(self):
@@ -370,7 +392,7 @@ class Lightcone:
 
     def plot_redshift_final_surviving_mass(self):
 
-        plt.scatter(self.redshifts, self.final_surviving_masses, alpha=0.5, c='k', s=10)
+        plt.scatter(self.redshifts, self.final_surviving_masses.to("Msun"), alpha=0.5, c='k', s=10)
 
         plt.xlabel("Redshift")
         plt.ylabel("Final surviving stellar mass (Msun)")
@@ -380,14 +402,25 @@ class Lightcone:
 
     def plot_redshift_surviving_mass(self):
 
-        plt.scatter(self.redshifts, self.surviving_masses.to("Msun"), alpha=0.5, c='k', s=10)
+        c = np.log10(self.final_surviving_masses.to("Msun").value)
+        plt.scatter(self.redshifts, self.surviving_masses.to("Msun"), alpha=0.5, c=c, s=10, cmap='viridis')
 
+        plt.colorbar(label='Final Mass (Msun)')
         plt.xlabel("Redshift")
-        plt.ylabel("Final surviving stellar mass (Msun)")
-        plt.xlim(self.redshift_range)
+        plt.ylabel("Current surviving mass (Msun)")
         plt.yscale("log")
         plt.show()
 
+    def plot_mass_ratio(self):
+        """ Plot the ratio between final and current stellar mass."""
+        
+        mass_ratio = self.final_surviving_masses.to("Msun") / self.surviving_masses.to("Msun")
+        plt.scatter(self.redshifts, mass_ratio, alpha=0.5, s=10)
+
+        plt.xlabel("Redshift")
+        plt.ylabel("Mass ratio (Final / Current)")
+        plt.axhline(1, color='r', linestyle='--')
+        plt.show()
 
     def plot_number_counts(self, filter_code, bin_edges=None, bin_width=0.5, magnitude=False,
                            observations=None):
@@ -425,6 +458,8 @@ class Lightcone:
             bin_edges = np.arange(np.min(x), np.max(x) + bin_width, bin_width)
 
         hist, edges = np.histogram(x, bins=bin_edges)
+        bin_width = np.diff(edges)
+
         surface_density = hist / (bin_width * self.solid_angle.to("deg**2").value)
 
         # Plot and add any observations.
