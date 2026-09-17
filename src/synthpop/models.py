@@ -3,7 +3,8 @@ import numpy as np
 from synthesizer.parametric import SFH, ZDist
 from synthesizer.parametric.sf_hist import Common
 from synthesizer import exceptions
-from synthpop.distribution_functions import Schechter, Driver2022_DoubleSchechter, Driver2022_SingleSchechter
+from synthpop.distribution_functions import (Schechter, SumDistributionFunction, 
+                                             Driver2022_DoubleSchechter)
 from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc, dimensionless
 
 class DriverTwoPhase(Common):
@@ -313,88 +314,15 @@ class Constant100(Model):
             dust_attenuation_function=dust_attenuation_function,
         )
 
-
-class DriverMoffettSpheroid(Model):
-    def __init__(self):
-
-        galaxy_stellar_mass_function = Schechter(
-            phi_star=3.70e-3 / Mpc**3, alpha=-0.623 * dimensionless, x_star=10**10.60 * Msun)
-
-        # Define a delta function for metallicity
-        metal_dist_function = ZDist.DeltaConstant
-
-        metal_dist_parameters = {
-            "log10metallicity": -2.5
-        }
-
-        sfh_function = DriverTwoPhase
-
-        sfh_parameters = {
-            "tau": 21.86 * Gyr,
-            "n": 8.57 * dimensionless,
-            "max_age": 1.37E10 * yr,
-            "min_age": 0.0 * yr
-        }
-
-        # Define dust attenuation as a function of stellar mass
-        def dust_attenuation_function(mass):
-
-            tau_v = 0.1 * ((mass-1E9*Msun)/(1E9*Msun))  # Example: tau_v decreases with mass
-            r = np.random.normal(0, 0.5, size=mass.shape)  # Add some scatter
-            return np.maximum(0.0, tau_v * (1 + r)) * dimensionless
-
-        super().__init__(
-            galaxy_stellar_mass_function=galaxy_stellar_mass_function,
-            sfh_function=sfh_function,
-            sfh_parameters=sfh_parameters,
-            metal_dist_function=metal_dist_function,
-            metal_dist_parameters=metal_dist_parameters,
-            dust_attenuation_function=dust_attenuation_function
-        )
-
-class DriverMoffettSpheroid2(Model):
-    def __init__(self):
-
-        galaxy_stellar_mass_function = Schechter(
-            phi_star=3.70e-3 / Mpc**3, alpha=-0.623 * dimensionless, x_star=10**10.60 * Msun)
-
-        # Define a delta function for metallicity
-        metal_dist_function = ZDist.DeltaConstant
-
-        metal_dist_parameters = {
-            "log10metallicity": -2.5
-        }
-
-        sfh_function = DriverTwoPhase
-
-        sfh_parameters = {
-            "tau": 16.82 * Gyr,
-            "n": 6.97 * dimensionless,
-            "max_age": 1.37E10 * yr,
-            "min_age": 0.0 * yr
-        }
-
-        # Define dust attenuation as a function of stellar mass
-        def dust_attenuation_function(mass):
-
-            tau_v = 0.1 * ((mass-1E9*Msun)/(1E9*Msun))  # Example: tau_v decreases with mass
-            r = np.random.normal(0, 0.5, size=mass.shape)  # Add some scatter
-            return np.maximum(0.0, tau_v * (1 + r)) * dimensionless
-
-        super().__init__(
-            galaxy_stellar_mass_function=galaxy_stellar_mass_function,
-            sfh_function=sfh_function,
-            sfh_parameters=sfh_parameters,
-            metal_dist_function=metal_dist_function,
-            metal_dist_parameters=metal_dist_parameters,
-            dust_attenuation_function=dust_attenuation_function
-        )
-
 class DriverMoffettDisc(Model):
     def __init__(self):
 
-        galaxy_stellar_mass_function = Schechter(
-            phi_star=1.72e-3 / Mpc**3, alpha=-1.20 * dimensionless, x_star=10**10.73 * Msun)
+        functions = [Schechter(phi_star=1.67e-3 / Mpc**3, alpha=-1.58 * dimensionless, x_star=10**9.647 * Msun),
+                     Schechter(phi_star=2.42e-3 / Mpc**3, alpha=-0.736 * dimensionless, x_star=10**10.40 * Msun),
+                     Schechter(phi_star=2.06e-3 / Mpc**3, alpha=-0.337 * dimensionless, x_star=10**10.43 * Msun),
+        ]
+
+        galaxy_stellar_mass_function = SumDistributionFunction(functions, name="DriverMoffettDisc_GSMF")
 
         # Define a delta function for metallicity
         metal_dist_function = ZDist.DeltaConstant
@@ -408,6 +336,47 @@ class DriverMoffettDisc(Model):
         sfh_parameters = {
             "tau": 29.39 * Gyr,
             "n": 5.50 * dimensionless,
+            "max_age": 1.37E10 * yr,
+            "min_age": 0.0 * yr
+        }
+
+        # Define dust attenuation as a function of stellar mass
+        def dust_attenuation_function(mass):
+
+            tau_v = 0.1 * ((mass-1E9*Msun)/(1E9*Msun))  # Example: tau_v decreases with mass
+            r = np.random.normal(0, 0.5, size=mass.shape)  # Add some scatter
+            return np.maximum(0.0, tau_v * (1 + r)) * dimensionless
+
+        super().__init__(
+            galaxy_stellar_mass_function=galaxy_stellar_mass_function,
+            sfh_function=sfh_function,
+            sfh_parameters=sfh_parameters,
+            metal_dist_function=metal_dist_function,
+            metal_dist_parameters=metal_dist_parameters,
+            dust_attenuation_function=dust_attenuation_function
+        )
+
+class DriverMoffettSpheroid(Model):
+    def __init__(self):
+
+        functions = [Schechter(phi_star=0.866e-3 / Mpc**3, alpha=-0.887 * dimensionless, x_star=10**11.02 * Msun),
+                     Schechter(phi_star=2.84e-3 / Mpc**3, alpha=-0.179 * dimensionless, x_star=10**10.15 * Msun),
+                     ]
+
+        galaxy_stellar_mass_function = SumDistributionFunction(functions, name="DriverMoffettSpheroid_GSMF")
+
+        # Define a delta function for metallicity
+        metal_dist_function = ZDist.DeltaConstant
+
+        metal_dist_parameters = {
+            "log10metallicity": -2.5
+        }
+
+        sfh_function = DriverTwoPhase
+
+        sfh_parameters = {
+            "tau": 21.86 * Gyr,
+            "n": 8.57 * dimensionless,
             "max_age": 1.37E10 * yr,
             "min_age": 0.0 * yr
         }

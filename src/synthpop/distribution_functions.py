@@ -814,10 +814,99 @@ class DoublePowerLaw(ParametricDistributionFunction):
 
         return result
 
+class SumDistributionFunction(ParametricDistributionFunction):
+    """
+    Sum individual parametric distribution functions to create a new distribution function.
+    """
 
+    def __init__(self, functions, name=None):
+        """
+        Initialise the summed distribution function.
+        
+        Parameters
+        ----------
+        functions : List[ParametricDistributionFunction]
+            Individual distribution functions to sum.
+        name : str, optional
+            Name of the summed distribution function.
+        """
 
+        if len(functions) < 1:
+            raise ValueError("Must provide at least one distribution function.")
 
+        x_units = functions[0].x_units
+        for f in functions[1:]:
+            if f.x_units != x_units:
+                raise ValueError("All functions must share the same x_units.")
 
+        self.functions = functions
+
+        ParametricDistributionFunction.__init__(
+            self,
+            name=name or " + ".join(f.name for f in functions),
+            parameters={
+                f"function_{i}": f.parameters for i, f in enumerate(functions)
+            },
+            x_units=x_units,
+        )
+
+    def phi(self, x):
+        return np.sum([f.phi(x) for f in self.functions], axis=0)
+
+    def phi_logx(self, logx):
+        return np.sum([f.phi_logx(logx) for f in self.functions], axis=0)
+
+    def zeroth_moment(self, xmin=0.0, xmax=np.inf):
+        return np.sum([f.zeroth_moment(xmin=xmin, xmax=xmax) for f in self.functions])
+
+    def first_moment(self, xmin=0.0, xmax=np.inf):
+        return np.sum([f.first_moment(xmin=xmin, xmax=xmax) for f in self.functions])
+
+    def plot(self, xmin=0.001, xmax=100, ylimits=None, grid=True,
+             observations=None, samples=None, bins=30, volume=None):
+        """
+        Plot the summed distribution function.
+
+        Parameters
+        ----------
+        xmin, xmax : float
+            Quantity limits, expressed as multiples of the smallest and
+            largest component x_star respectively (so the full range of
+            all components is covered).
+        """
+
+        # Use the extreme x_star values across components to set the
+        # plotting range, since there's no single x_star for the sum.
+        x_stars = [f.x_star for f in self.functions]
+        x_lo = xmin * min(x_stars)
+        x_hi = xmax * max(x_stars)
+
+        plt.figure(figsize=(8, 5))
+
+        x = np.logspace(np.log10(x_lo), np.log10(x_hi), 1000)
+        log10phi_vals = np.log10(self.phi_logx(np.log10(x)))
+        plt.plot(np.log10(x), log10phi_vals, label=self.name)
+
+        if samples is not None:
+            hist, edges = np.histogram(
+                np.log10(samples),
+                range=[np.log10(x_lo), np.log10(x_hi)],
+                bins=bins,
+            )
+            bin_width = edges[1] - edges[0]
+            phi_sampled = hist / (bin_width * volume.to("Mpc**3").value)
+            plt.step(edges[:-1], np.log10(phi_sampled), where='post')
+
+        if ylimits is not None:
+            plt.ylim(ylimits)
+
+        plt.xlabel("Quantity (e.g. luminosity or mass)")
+        plt.ylabel(r"$\phi$ (number density per unit quantity)")
+        plt.title(f"{self.name} Distribution Function")
+        plt.legend()
+        if grid:
+            plt.grid()
+        plt.show()
 
 predefined_distribution_functions = ['Driver2022_SingleSchechter', 'Driver2022_DoubleSchechter']
 
