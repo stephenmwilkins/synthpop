@@ -12,6 +12,7 @@ class Lightcone:
         minimum_stellar_mass=1e6*Msun,
         maximum_stellar_mass=1e12*Msun,                 
         grid=None,
+        merger_grid=None,
         cosmology=None,
         redshift_range=(0, 10.),
         solid_angle=4*np.pi * sr,
@@ -21,6 +22,7 @@ class Lightcone:
 
         self.model = model
         self.grid = grid
+        self.merger_grid = merger_grid
         self.cosmology = cosmology
         self.redshift_range = redshift_range
         self.solid_angle = solid_angle.to("deg**2")
@@ -82,6 +84,11 @@ class Lightcone:
         
         print(self.N)
 
+        if self.merger_grid is not None:
+            self._split_by_mergers()
+
+        print(self.N)
+
         self._create_galaxies()
 
         self.surviving_masses = np.array([galaxy.stars.surviving_mass.to("Msun").value for galaxy in self.galaxies]) * Msun
@@ -116,6 +123,9 @@ class Lightcone:
         if self.grid != lightcone2.grid:
             raise ValueError("Cannot add Lightcone instances with different SPS grids.")
 
+        if self.merger_grid != lightcone2.merger_grid:
+            raise ValueError("Cannot add Lightcone instances with different merger grids.")
+
         if not np.isclose(
             self.solid_angle.to("sr").value,
             lightcone2.solid_angle.to("sr").value,
@@ -127,6 +137,7 @@ class Lightcone:
         # Copy over the attributes associated with these elements.
         lightcone3.model = self.model
         lightcone3.grid = self.grid
+        lightcone3.merger_grid = self.merger_grid
         lightcone3.cosmology = self.cosmology
         lightcone3.redshift_range = self.redshift_range
         lightcone3.solid_angle = self.solid_angle
@@ -199,6 +210,48 @@ class Lightcone:
         with open(filename, "rb") as f:
             return dill.load(f)
 
+    def _split_by_mergers(self):
+        """Split each sampled galaxy into N progenitors per the merger
+        grid, at the SAME redshift it was sampled at -- each progenitor
+        gets final_surviving_mass / N. Uses MergerGrid's vectorised
+        lookup, so every sampled galaxy is queried in one call.
+        """
+ 
+        N_prog = self.merger_grid.get(
+            'N_mean',
+            interpolate=True,
+            mass=self.final_surviving_masses,
+            redshift=self.redshifts,
+        )
+        N_std = self.merger_grid.get(
+            'N_std',
+            interpolate=True,
+            mass=self.final_surviving_masses,
+            redshift=self.redshifts,
+        )
+
+        N_prog = np.round(np.random.normal(N_prog.to("dimensionless").value, N_std.to("dimensionless").value))
+ 
+        #N_prog = np.round(N_prog.to("dimensionless").value)
+        N_prog = np.where(np.isnan(N_prog), 1, N_prog)
+        N_prog = np.maximum(N_prog, 1).astype(int)
+
+        plt.hist(N_prog)
+        plt.show()
+ 
+        mass_per_prog = self.final_surviving_masses.to("Msun").value / N_prog
+
+        plt.hist(np.log10(self.final_surviving_masses.to("Msun").value), bins=50, range=(8, 12))
+        plt.show()
+
+        self.redshifts = np.repeat(self.redshifts, N_prog)
+        self.lookback_times = np.repeat(self.lookback_times.to("Myr").value, N_prog) * Myr
+        self.final_surviving_masses = np.repeat(mass_per_prog, N_prog) * Msun
+
+        plt.hist(np.log10(self.final_surviving_masses.to("Msun").value), bins=50, range=(8, 12))
+        plt.show()
+ 
+        self.N = len(self.redshifts)
 
     def _create_galaxies(self):
         """Create galaxy objects with properties sampled from the population."""
