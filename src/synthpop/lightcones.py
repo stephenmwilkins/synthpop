@@ -1,25 +1,124 @@
 import types
 import dill
+import warnings
+
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing as mp
+
 import numpy as np
 from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc, sr, unyt_array
 import matplotlib.pyplot as plt
+
 from synthesizer.parametric import Stars, Galaxy
 
-class Lightcone:
-
-    def __init__(self, 
-        model=None,
-        minimum_stellar_mass=1e6*Msun,
-        maximum_stellar_mass=1e12*Msun,                 
-        grid=None,
-        merger_grid=None,
-        cosmology=None,
-        redshift_range=(0, 10.),
-        solid_angle=4*np.pi * sr,
-        random_seed=42
-        ):
+# Set up multiprocessing capability when constructing Lightcone galaxies.
+def _build_galaxy(model, grid, redshift, lookback_time, final_surviving_mass):
+    """Build a galaxy object with a given model.
+    
+    Parameters
+    ----------
+    model : object
+        The Synthpop galaxy model to use for building the galaxy.
+    grid : object
+        The SPS grid to use for building the galaxy.
+    redshift : float
+        The redshift of the galaxy.
+    lookback_time : unyt_quantity
+        The lookback time corresponding to the redshift and cosmology.
+    final_surviving_mass : unyt_quantity
+        The surviving stellar mass of the galaxy at redshift zero.
         
+    Returns
+    -------
+    Galaxy
+        A Galaxy object with the specified properties.
+    """
 
+    # Unpack the SFH parameters.
+    sfh_parameters = {}
+    for key, value in model.sfh_parameters.items():
+        if isinstance(value, unyt_quantity):
+            sfh_parameters[key] = value
+        elif isinstance(value, types.FunctionType):
+            sfh_parameters[key] = value(final_surviving_mass)
+        else:
+            raise ValueError(f"Unsupported type for sfh parameter '{key}': {type(value)}")
+
+    # Get functional form of the SF and metallicity distributions.
+    sfh_model = model.sfh_function(**sfh_parameters) if model.sfh_function else None
+    metal_dist_model = (
+        model.metal_dist_function(**model.metal_dist_parameters)
+        if model.metal_dist_function
+        else None
+    )
+
+    # Build the Synthesizer Stars object at z=0.
+    final_stars = Stars(
+        grid.log10ages,
+        grid.metallicities,
+        sf_hist=sfh_model,
+        metal_dist=metal_dist_model,
+        surviving_mass=final_surviving_mass,
+        grid=grid,
+    )
+
+    # Trace the Stars back to the desired lookback time.
+    stars = final_stars.get_at_earlier_time(lookback_time)
+    stars.surviving_mass = stars.calculate_surviving_mass(grid)
+
+    return Galaxy(stars=stars, redshift=redshift)
+
+# The SFH model and Grid are the same for every galaxy, so we can store
+# them globally for each worker process.
+_GALAXY_WORKER_MODEL = None
+_GALAXY_WORKER_GRID = None
+
+def _init_galaxy_worker(model_and_grid=None):
+    """Initialise the SFH model and Grid for a worker process."""
+    global _GALAXY_WORKER_MODEL, _GALAXY_WORKER_GRID
+    if model_and_grid is not None:
+        _GALAXY_WORKER_MODEL, _GALAXY_WORKER_GRID = dill.loads(model_and_grid)
+
+def _build_galaxy_worker(arguments):
+    """Wrapper function to build a galaxy in a worker process."""
+    return _build_galaxy(_GALAXY_WORKER_MODEL, _GALAXY_WORKER_GRID, *arguments)
+
+class Lightcone:
+    """A lightcone of galaxies generated using a Synthpop model."""
+
+    def __init__(self, model=None, minimum_stellar_mass=1e6*Msun, maximum_stellar_mass=1e12*Msun, 
+                 grid=None, merger_grid=None, cosmology=None, redshift_range=(0, 10.),
+                 solid_angle=4*np.pi * sr, random_seed=42, n_jobs=1):
+        """__init__ method for the Lightcone class.
+        
+        Parameters
+        ----------
+        model : object
+            The Synthpop galaxy model to use.
+        minimum_stellar_mass : unyt_quantity
+            The minimum stellar mass of galaxies at z=0.
+        maximum_stellar_mass : unyt_quantity
+            The maximum stellar mass of galaxies at z=0.
+        grid : object
+            The Synthesizer SPS grid. Spectra are not required to build 
+            the population, so this can be loaded with 
+            ignore_spectra=True to reduce memory usage.
+        merger_grid : object
+            The Synthpop merger grid describing progenitor counts as a 
+            function of z=0 mass and redshift.
+        cosmology : astropy.cosmology object
+            The cosmology to assume.
+        redshift_range : tuple
+            The lightcone will be populated over this redshift range.
+        solid_angle : unyt_quantity
+            The solid angle of the lightcone.
+        random_seed : int
+            The random seed to use.
+        n_jobs : int
+            The number processes to use when constructing galaxies.
+            Use -1 to use all cores, or 1 for no multiprocessing."""
+        
+        # Assign the input parameters to attributes.
         self.model = model
         self.grid = grid
         self.merger_grid = merger_grid
@@ -28,70 +127,74 @@ class Lightcone:
         self.solid_angle = solid_angle.to("deg**2")
         self.star_formation_rates = None
         self.random_seed = random_seed
+        self.rng = np.random.default_rng(random_seed)
 
         self.age_of_the_universe = self.cosmology.age(redshift_range[0]).to("yr").value * yr
         self.model.sfh_parameters['max_age'] = self.age_of_the_universe
 
-        # Grids
-        z_grid = np.linspace(*self.redshift_range, 500)
-        logM_grid = np.linspace(
+        # Configure multiprocessing jobs and method.
+        if not isinstance(n_jobs, int) or n_jobs == 0 or n_jobs < -1:
+            raise ValueError("n_jobs must be a positive integer or -1")
+        if n_jobs > 1:
+            warnings.warn(
+                "Multiprocessing is enabled. You may consider providing a grid loaded with " \
+                "ignore_spectra=True to reduce memory usage."
+            )
+
+        available_start_methods = mp.get_all_start_methods()
+        start_method = "spawn" if "spawn" in available_start_methods else "fork"
+
+        # Construct redshift and compute volume within each shell.
+        z_edges = np.linspace(*self.redshift_range, 501)
+        shell_volume = (
+            cosmology.comoving_volume(z_edges[1:])
+            - cosmology.comoving_volume(z_edges[:-1])
+        ).to("Mpc**3").value / (4 * np.pi)
+
+        # Construct mass grid and sample the z=0 stellar mass function.
+        logM_edges = np.linspace(
             np.log10(minimum_stellar_mass.to("Msun").value), 
             np.log10(maximum_stellar_mass.to("Msun").value), 
-            500)
-
-        # Volume element (Mpc^3 sr^-1 dz^-1)
-        dV_dz = cosmology.differential_comoving_volume(z_grid).to("Mpc**3/sr").value
-
-        # Evaluate Φ(logM)
+            501)
+        logM_grid = 0.5 * (logM_edges[:-1] + logM_edges[1:])
         phiM = self.model.galaxy_stellar_mass_function.phi_logx(logM_grid)
 
-        # Joint PDF: Φ(M) × dV/dz
-        dz = np.diff(z_grid).mean()
+        # Combine the grids to get a PDF and the expected galaxy count.
         dlogM = np.diff(logM_grid).mean()
-        pdf = np.outer(dV_dz, phiM)
+        pdf = np.outer(shell_volume, phiM) * dlogM
 
         Nexp = (
             np.sum(pdf)
-            * dz
-            * dlogM
             * self.solid_angle.to("sr").value
         )
+        N = self.rng.poisson(Nexp)
 
-        norm = np.sum(pdf) * dz * dlogM
-        pdf /= norm
-
-        N = np.random.poisson(Nexp)
-
-        # Flatten and normalize
+        # Flatten and normalise the PDF.
         pdf_flat = pdf.ravel()
         pdf_flat /= pdf_flat.sum()
 
-        # Draw samples
-        idx = np.random.choice(
-            pdf_flat.size,
-            size=N,
-            p=pdf_flat
-        )
+        # Draw samples to get the redshifts and z=0 masses of galaxies.
+        idx = self.rng.choice(pdf_flat.size, size=N, p=pdf_flat)
 
         iz, iM = np.unravel_index(idx, pdf.shape)
 
-        self.redshifts = z_grid[iz]
-        self.final_surviving_masses = 10**logM_grid[iM] * Msun
+        self.final_surviving_masses = (
+            10**self.rng.uniform(logM_edges[iM], logM_edges[iM + 1]) * Msun
+        )
 
+        self.redshifts = self.rng.uniform(z_edges[iz], z_edges[iz + 1])
         self.lookback_times = cosmology.lookback_time(self.redshifts).to("Myr").value * Myr
-
         self.N = N
-        
-        print(self.N)
 
+        # Split z>0 galaxies into progenitors.
         if self.merger_grid is not None:
-            self._split_by_mergers()
+            self._split_by_progenitors()
 
-        print(self.N)
+        # Create the final galaxy objects and extract the masses.
+        self._create_galaxies(n_jobs=n_jobs, start_method=start_method)
 
-        self._create_galaxies()
-
-        self.surviving_masses = np.array([galaxy.stars.surviving_mass.to("Msun").value for galaxy in self.galaxies]) * Msun
+        self.surviving_masses = np.array(
+            [galaxy.stars.surviving_mass.to("Msun").value for galaxy in self.galaxies]) * Msun
 
     def __add__(self, lightcone2):
         """
@@ -144,10 +247,11 @@ class Lightcone:
         lightcone3.random_seed = self.random_seed
         lightcone3.age_of_the_universe = self.age_of_the_universe
 
-        # Concatenate the galaxy lists and update the number of galaxies.
+        # Add the galaxy lists and update the number of galaxies.
         lightcone3.galaxies = self.galaxies + lightcone2.galaxies
         lightcone3.N = len(lightcone3.galaxies)
 
+        # Concatenate each of the property arrays.
         lightcone3.redshifts = np.concatenate([self.redshifts, lightcone2.redshifts])
 
         lightcone3.lookback_times = np.concatenate([
@@ -210,85 +314,122 @@ class Lightcone:
         with open(filename, "rb") as f:
             return dill.load(f)
 
-    def _split_by_mergers(self):
-        """Split each sampled galaxy into N progenitors per the merger
-        grid, at the SAME redshift it was sampled at -- each progenitor
-        gets final_surviving_mass / N. Uses MergerGrid's vectorised
-        lookup, so every sampled galaxy is queried in one call.
-        """
- 
-        N_prog = self.merger_grid.get(
-            'N_mean',
-            interpolate=True,
-            mass=self.final_surviving_masses,
-            redshift=self.redshifts,
-        )
-        N_std = self.merger_grid.get(
-            'N_std',
-            interpolate=True,
-            mass=self.final_surviving_masses,
-            redshift=self.redshifts,
-        )
+    def _split_by_progenitors(self):
+        """Split galaxies at z>0 into progenitors based on z=0 mass."""
 
+        # Get the number of progenitors by sampling from a Gaussian.
+        N_prog = self.merger_grid.get(
+            'N_mean',interpolate=True, mass=self.final_surviving_masses, redshift=self.redshifts)
+        N_std = self.merger_grid.get(
+            'N_std', interpolate=True, mass=self.final_surviving_masses, redshift=self.redshifts)
+        
         N_prog = np.round(np.random.normal(N_prog.to("dimensionless").value, N_std.to("dimensionless").value))
- 
-        #N_prog = np.round(N_prog.to("dimensionless").value)
         N_prog = np.where(np.isnan(N_prog), 1, N_prog)
         N_prog = np.maximum(N_prog, 1).astype(int)
 
-        plt.hist(N_prog)
-        plt.show()
- 
-        mass_per_prog = self.final_surviving_masses.to("Msun").value / N_prog
+        # Now get the mass fraction in the two most massive progenitors.
+        frac1 = self.merger_grid.get(
+            'frac1_median', interpolate=True, mass=self.final_surviving_masses, redshift=self.redshifts)
+        frac2 = self.merger_grid.get(
+            'frac2_median', interpolate=True, mass=self.final_surviving_masses, redshift=self.redshifts)
 
-        plt.hist(np.log10(self.final_surviving_masses.to("Msun").value), bins=50, range=(8, 12))
-        plt.show()
+        # Replace missing coverage with equal distributions.
+        frac1 = np.where(np.isnan(frac1), 1.0 / N_prog, frac1)
+        frac2 = np.where(np.isnan(frac1) | np.isnan(frac2), 1.0 / N_prog, frac2)
 
-        self.redshifts = np.repeat(self.redshifts, N_prog)
-        self.lookback_times = np.repeat(self.lookback_times.to("Myr").value, N_prog) * Myr
-        self.final_surviving_masses = np.repeat(mass_per_prog, N_prog) * Msun
+        # Enforce f1 + f2 <= 1.
+        frac1 = np.clip(frac1, 0.0, 1.0)
+        frac2 = np.clip(frac2, 0.0, 1.0 - frac1)
 
-        plt.hist(np.log10(self.final_surviving_masses.to("Msun").value), bins=50, range=(8, 12))
-        plt.show()
- 
+        # The mass and lookback times of the original galaxies.
+        z0_total_masses = self.final_surviving_masses.to("Msun").value
+        lookback_times = self.lookback_times.to("Myr").value
+
+        new_redshifts = []
+        new_lookback = []
+        new_masses = []
+
+        # For each original galaxy.
+        for i in range(self.N):
+
+            # Get its final mass and the number of progenitors.
+            z0_total_mass = z0_total_masses[i]
+            n = int(N_prog[i])
+
+            # No splitting required.
+            if n == 1:
+                components = [z0_total_mass]
+
+            # If only two progenitors f1 + f2 = 1.
+            elif n == 2:
+
+                f1, f2 = frac1[i], frac2[i]
+                norm = f1 + f2
+
+                f1, f2 = f1 / norm, f2 / norm
+                components = [f1 * z0_total_mass, f2 * z0_total_mass]
+
+            # Assign mass to additional progenitors equally.
+            else:
+                f1, f2 = frac1[i], frac2[i]
+                remainder_frac = max(1.0 - f1 - f2, 0.0)
+                remainder_each = (remainder_frac * z0_total_mass) / (n - 2)
+                components = [f1 * z0_total_mass, f2 * z0_total_mass] + [remainder_each] * (n - 2)
+
+            new_redshifts.extend([self.redshifts[i]] * n)
+            new_lookback.extend([lookback_times[i]] * n)
+            new_masses.extend(components)
+
+        # Overwrite the original arrays.
+        self.redshifts = np.array(new_redshifts)
+        self.lookback_times = np.array(new_lookback) * Myr
+        self.final_surviving_masses = np.array(new_masses) * Msun
         self.N = len(self.redshifts)
 
-    def _create_galaxies(self):
-        """Create galaxy objects with properties sampled from the population."""
+    def _create_galaxies(self, n_jobs, start_method):
+        """Create galaxy objects using the model and sampled parameters.
+        
+        Parameters
+        ----------
+        n_jobs : int
+            The number of parallel jobs to use.
+        start_method : str
+            The method to use for starting new processes.
+        """
 
+        tasks = list(zip(self.redshifts, self.lookback_times, self.final_surviving_masses))
 
-        self.galaxies = []
+        # Just loop over tasks if no multiprocessing is requested.
+        if n_jobs == 1 or len(tasks) < 2:
+            self.galaxies = [
+                _build_galaxy(self.model, self.grid, *task)
+                for task in tasks
+            ]
+            return
 
-        for redshift, lookback_time, final_surviving_mass in zip(self.redshifts, self.lookback_times, self.final_surviving_masses):
+        # Otherwise, configure multiprocessing.
+        workers = n_jobs if n_jobs > 0 else mp.cpu_count()
+        context = mp.get_context(start_method)
+        chunksize = max(1, len(tasks) // (workers * 4))
 
-            sfh_parameters = {}
-            for key, value in self.model.sfh_parameters.items():
-                if isinstance(value, unyt_quantity):
-                    sfh_parameters[key] = value
-                elif isinstance(value, types.FunctionType):
-                    sfh_parameters[key] = value(final_surviving_mass)
-                else:
-                    raise ValueError(f"Unsupported type for sfh parameter '{key}': {type(value)}")
+        if start_method == "fork":
+            global _GALAXY_WORKER_MODEL, _GALAXY_WORKER_GRID
+            _GALAXY_WORKER_MODEL = self.model
+            _GALAXY_WORKER_GRID = self.grid
+            initializer_args = ()
+        else:
+            initializer_args = (dill.dumps((self.model, self.grid)),)
 
-            sfh_model = self.model.sfh_function(**sfh_parameters) if self.model.sfh_function else None
-            
-            metal_dist_model = self.model.metal_dist_function(**self.model.metal_dist_parameters) if self.model.metal_dist_function else None
-
-            # Create the Stars object
-            final_stars = Stars(
-                self.grid.log10ages,
-                self.grid.metallicities,
-                sf_hist=sfh_model,
-                metal_dist=metal_dist_model,
-                surviving_mass=final_surviving_mass,
-                grid=self.grid,
+        # Initialize and execue the worker processes.
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            mp_context=context,
+            initializer=_init_galaxy_worker,
+            initargs=initializer_args,
+        ) as executor:
+            self.galaxies = list(
+                executor.map(_build_galaxy_worker, tasks, chunksize=chunksize)
             )
-
-            # Create the new Stars object at the earlier lookback time.
-            stars = final_stars.get_at_earlier_time(lookback_time)
-            stars.surviving_mass = stars.calculate_surviving_mass(self.grid)
-
-            self.galaxies.append(Galaxy(stars=stars, redshift=redshift))
 
     def calculate_star_formation_rates(self, age=10*Myr):
         """
