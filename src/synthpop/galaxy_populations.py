@@ -27,6 +27,7 @@ class GalaxyPopulation:
         self.redshift = redshift
         self.random_seed = random_seed
 
+        self.lookback_time = self.cosmology.lookback_time(redshift).to("Myr").value * Myr
         self.age_of_the_universe = self.cosmology.age(self.redshift).to("Myr").value * Myr
 
         # This is used when we are generating a population from a later population
@@ -37,21 +38,22 @@ class GalaxyPopulation:
             self._surviving_masses = self.surviving_masses.to('Msun').value
 
         else:
-            # Sample the surviving masses from the galaxy stellar mass function
-            self._surviving_masses = self.model.galaxy_stellar_mass_function.sample(
+            # Sample the surviving masses at z=0 from the GSMF.
+            self.final_surviving_masses = self.model.galaxy_stellar_mass_function.sample(
                 xmin=minimum_stellar_mass, 
                 xmax=maximum_stellar_mass, 
                 volume=volume,
             ) 
+            self.final_surviving_masses = self.final_surviving_masses * Msun
 
-            # Store the surviving mass with units for later use
-            self.surviving_masses = self._surviving_masses * Msun
-
-            # Set the max_age parameter for the SFH function to the age of the universe at this redshift, if it is not already set in the model
-            self.model.sfh_parameters['max_age'] = self.age_of_the_universe
+            # Ensure that stellar ages do not exceed the 
+            # age of the Universe.
+            if self.model.sfh_parameters.get('max_age', None) is not None:
+                if self.model.sfh_parameters['max_age'] > self.age_of_the_universe:
+                    self.model.sfh_parameters['max_age'] = self.age_of_the_universe
 
             # Calculate dust attenuation if a function is provided in the model
-            self.tau_v = self.model.dust_attenuation_function(self.surviving_masses) if self.model.dust_attenuation_function else None
+            #self.tau_v = self.model.dust_attenuation_function(self.surviving_masses) if self.model.dust_attenuation_function else None
             self._create_galaxies()
 
         # Calculate the number of galaxies in the population
@@ -170,8 +172,8 @@ class GalaxyPopulation:
             else:
                 tau_v = None
 
-            # Create the Stars object
-            stars = Stars(
+            # Create the Stars object as it appears at z=0.
+            final_stars = Stars(
                 self.grid.log10ages,
                 self.grid.metallicities,
                 sf_hist=sfh_model,
@@ -180,6 +182,10 @@ class GalaxyPopulation:
                 grid=self.grid,
                 tau_v=tau_v,
             )
+
+            # Create the new Stars object at the earlier lookback time.
+            stars = final_stars.get_at_earlier_time(self.lookback_time)
+            stars.surviving_mass = stars.calculate_surviving_mass(self.grid)
 
             self.galaxies.append(Galaxy(stars=stars, redshift=self.redshift))
 
