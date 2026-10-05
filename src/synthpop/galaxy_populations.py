@@ -1,26 +1,53 @@
 import types
 import numpy as np
-from unyt import yr, Myr, Msun, Gyr, unyt_quantity, Mpc
+from unyt import unyt_array, yr, Myr, Msun, Gyr, unyt_quantity, Mpc
 import matplotlib.pyplot as plt
 from synthesizer.parametric import Stars, Galaxy
 import pickle
 import dill
+import warnings
+import copy
 
 class GalaxyPopulation:
+    """A single epoch galaxy population based on a Synthpop model."""
 
-    def __init__(self, 
-        model=None,
-        minimum_stellar_mass=1e6*Msun,
-        maximum_stellar_mass=1e12*Msun,                 
-        volume = 1E6*Mpc**3,
-        grid=None,
-        cosmology=None,
-        redshift=0.0,
-        random_seed=42,
-        galaxies=None,
-        ):
+    def __init__(self, model=None, minimum_stellar_mass=1e6*Msun, maximum_stellar_mass=1e12*Msun,
+                 volume=1E6*Mpc**3, grid=None, cosmology=None, redshift=0.0, random_seed=42,
+                 galaxies=None, final_surviving_masses=None):
+        """__init__ method for the GalaxyPopulation.
         
-        self.model = model
+        Parameters
+        ----------
+        model : Model
+            The Synthpop model to use.
+        minimum_stellar_mass : unyt_quantity
+            The minimum stellar mass at z=0 to consider.
+        maximum_stellar_mass : unyt_quantity
+            The maximum stellar mass at z=0 to consider.
+        volume : unyt_quantity
+            The volume from which to sample the galaxy population.
+        grid : object
+            The Synthesizer SPS grid. Spectra are not required to build 
+            the population, so this can be loaded with 
+            ignore_spectra=True to reduce memory usage.
+        cosmology : astropy.cosmology object
+            The cosmology to assume.
+        redshift : float
+            The redshift of the population.
+        random_seed : int
+            The random seed to use.
+        galaxies : list[Galaxy]
+            A list of existing Galaxies to use. Used when generating
+            a population from a later population.
+        final_surviving_masses : list[unyt_quantity]
+            A list of z=0 surviving masses for Galaxies in galaxies.
+            Used when generating a population from a later population.
+        """
+
+        # Assign the input parameters to attributes.
+        self.model = copy.deepcopy(model) if model is not None else None
+        self.minimum_stellar_mass = minimum_stellar_mass
+        self.maximum_stellar_mass = maximum_stellar_mass
         self.volume = volume
         self.grid = grid
         self.cosmology = cosmology
@@ -29,80 +56,106 @@ class GalaxyPopulation:
 
         self.lookback_time = self.cosmology.lookback_time(redshift).to("Myr").value * Myr
         self.age_of_the_universe = self.cosmology.age(self.redshift).to("Myr").value * Myr
+        self.final_age_of_the_universe = self.cosmology.age(0).to("Myr").value * Myr
 
-        # This is used when we are generating a population from a later population
+        # If a list of galaxies is provided, it is the population.
         if galaxies is not None:
+            if final_surviving_masses is None:
+                raise ValueError("If galaxies is provided, so must final_surviving_masses.")
             self.galaxies = galaxies
-            # need to regenerate the surviving masses with units for later use
-            self.surviving_masses = np.array([galaxy.stars.calculate_surviving_mass(self.grid).to('Msun').value for galaxy in self.galaxies]) * Msun
-            self._surviving_masses = self.surviving_masses.to('Msun').value
+            self.final_surviving_masses = final_surviving_masses
 
+        # Otherwise, we need to construct it.
         else:
+
             # Sample the surviving masses at z=0 from the GSMF.
             self.final_surviving_masses = self.model.galaxy_stellar_mass_function.sample(
                 xmin=minimum_stellar_mass, 
                 xmax=maximum_stellar_mass, 
                 volume=volume,
             ) 
-            self.final_surviving_masses = self.final_surviving_masses * Msun
+            self.final_surviving_masses = self.final_surviving_masses.to("Msun")
 
-            # Ensure that stellar ages do not exceed the 
-            # age of the Universe.
-            if self.model.sfh_parameters.get('max_age', None) is not None:
-                if self.model.sfh_parameters['max_age'] > self.age_of_the_universe:
-                    self.model.sfh_parameters['max_age'] = self.age_of_the_universe
+            # Ensure SFH max_age is consistent with the age of the 
+            # Universe at z=0.
+            if self.model.sfh_parameters.get('max_age', None) is None:
+                self.model.sfh_parameters['max_age'] = self.final_age_of_the_universe
+            else:
+                if self.model.sfh_parameters['max_age'] > self.final_age_of_the_universe:
+                    self.model.sfh_parameters['max_age'] = self.final_age_of_the_universe
 
-            # Calculate dust attenuation if a function is provided in the model
-            #self.tau_v = self.model.dust_attenuation_function(self.surviving_masses) if self.model.dust_attenuation_function else None
+            # Create the galaxies.
             self._create_galaxies()
 
-        # Calculate the number of galaxies in the population
+        # Get the surviving mass at the target redshift.
+        self.surviving_masses = np.array(
+            [galaxy.stars.surviving_mass.to("Msun").value for galaxy in self.galaxies]) * Msun
         self.N = len(self.surviving_masses)
 
-        # Calculate the total surviving stellar mass in the population
+        if self.N == 0:
+            raise ValueError("No galaxies were created. Consider adjusting the mass range "
+            "or volume.")
+
+        # Compute some basic statistics.
         self.total_surviving_stellar_mass = np.sum(self.surviving_masses)
 
-        # Calculate the total surviving stellar mass density in the population
         self.total_surviving_stellar_mass_density = self.total_surviving_stellar_mass / self.volume
 
-        # Calculate the range of surviving stellar masses in the population
-        self.surviving_mass_range = (self.surviving_masses.min(), self.surviving_masses.max()) 
+        self.final_surviving_mass_range = (self.final_surviving_masses.min(),
+                                            self.final_surviving_masses.max()) 
 
-        self._surviving_mass_range = (self._surviving_masses.min(), self._surviving_masses.max())
+        self.surviving_mass_range = (self.surviving_masses.min(),
+                                        self.surviving_masses.max())
 
+    def __add__(self, galpop2):
+        """Add two GalaxyPopulation instances.
+        
+        Parameters
+        ----------
+        galpop2 : GalaxyPopulation
+            Another GalaxyPopulation instance to add.
 
-    def __add__(self, other_galaxy_population):
-        """Add two GalaxyPopulation instances together.
-
-        In simple terms this sums the SFZH grids of both Stars instances.
-
-        This will only work for Stars objects with the same SFZH grid axes.
-
-        Args:
-            other_galaxy_population (GalaxyPopulation):
-                The other instance of GalaxyPopulation to add to this one.
+        Returns
+        -------
+        GalaxyPopulation
+            A new GalaxyPopulation instance containing the combined galaxy 
+            populations of both galaxy populations.
         """
- 
-        if self.volume != other_galaxy_population.volume:
+
+        # Ensure the galaxy populations have the same cosmology, 
+        # extent and grid.
+        if self.volume != galpop2.volume:
             raise ValueError("Cannot add GalaxyPopulation instances with different volumes.")
         
-        if self.cosmology != other_galaxy_population.cosmology:
+        if self.cosmology != galpop2.cosmology:
             raise ValueError("Cannot add GalaxyPopulation instances with different cosmologies.")
         
-        if self.redshift != other_galaxy_population.redshift:
+        if self.redshift != galpop2.redshift:
             raise ValueError("Cannot add GalaxyPopulation instances with different redshifts.")
         
-        if self.grid != other_galaxy_population.grid:
+        if self.grid != galpop2.grid:
             raise ValueError("Cannot add GalaxyPopulation instances with different SPS grids.")
 
-        return GalaxyPopulation(
-            volume=self.volume,
-            grid=self.grid,
-            cosmology=self.cosmology,
-            redshift=self.redshift,
-            galaxies=self.galaxies + other_galaxy_population.galaxies
-        )        
+        # Instantiate a new GalaxyPopulation with the combined galaxies and final surviving masses.
+        galpop3_galaxies = self.galaxies + galpop2.galaxies
+        galpop3_final_surviving_masses = np.concatenate([
+            self.final_surviving_masses.to("Msun").value,
+            galpop2.final_surviving_masses.to("Msun").value,
+        ]) * Msun
 
+        minimum_stellar_mass = min(self.minimum_stellar_mass, galpop2.minimum_stellar_mass)
+        maximum_stellar_mass = max(self.maximum_stellar_mass, galpop2.maximum_stellar_mass)
+
+        return GalaxyPopulation(model=None,
+                                minimum_stellar_mass=minimum_stellar_mass,
+                                maximum_stellar_mass=maximum_stellar_mass,
+                                volume=self.volume,
+                                grid=self.grid,
+                                cosmology=self.cosmology,
+                                redshift=self.redshift,
+                                random_seed=self.random_seed,
+                                galaxies=galpop3_galaxies,
+                                final_surviving_masses=galpop3_final_surviving_masses)
 
     def __str__(self):
         """Print basic summary of the galaxy population."""
@@ -147,10 +200,9 @@ class GalaxyPopulation:
     def _create_galaxies(self):
         """Create galaxy objects with properties sampled from the population."""
 
-
         self.galaxies = []
 
-        for i, surviving_mass in enumerate(self.surviving_masses):
+        for i, final_surviving_mass in enumerate(self.final_surviving_masses):
 
             sfh_parameters = {}
             for key, value in self.model.sfh_parameters.items():  
@@ -159,7 +211,7 @@ class GalaxyPopulation:
                 elif isinstance(value, (list, np.ndarray)):
                     sfh_parameters[key] = value[i]
                 elif isinstance(value, types.FunctionType):
-                    sfh_parameters[key] = value(surviving_mass)
+                    sfh_parameters[key] = value(final_surviving_mass)
                 else:                    
                     raise ValueError(f"Unsupported type for sfh parameter '{key}': {type(value)}")
 
@@ -167,20 +219,14 @@ class GalaxyPopulation:
             
             metal_dist_model = self.model.metal_dist_function(**self.model.metal_dist_parameters) if self.model.metal_dist_function else None
 
-            if self.tau_v is not None:
-                tau_v = float(self.tau_v[i])
-            else:
-                tau_v = None
-
             # Create the Stars object as it appears at z=0.
             final_stars = Stars(
                 self.grid.log10ages,
                 self.grid.metallicities,
                 sf_hist=sfh_model,
                 metal_dist=metal_dist_model,
-                surviving_mass=surviving_mass,
+                surviving_mass=final_surviving_mass,
                 grid=self.grid,
-                tau_v=tau_v,
             )
 
             # Create the new Stars object at the earlier lookback time.
@@ -189,35 +235,50 @@ class GalaxyPopulation:
 
             self.galaxies.append(Galaxy(stars=stars, redshift=self.redshift))
 
-    def project_to_earlier_epoch(self, redshift=None, age=None):
+    def project_to_earlier_epoch(self, redshift):
+        """Project a galaxy population to an earlier epoch.
 
-        if redshift is not None:
-            target_age = self.cosmology.lookback_time(redshift).to("Myr").value * Myr
-        elif age is not None:
-            target_age = age
-        else:
-            raise ValueError("Must specify either redshift or age to project to.")
+        Due to Synthesizer quirks, get_earlier_earlier_time is less 
+        accurate when applied to the same Stars object multiple times.
+        This should be kept in mind when using this functionality.
+         
+        Parameters
+        ----------
+        redshift : float
+            The redshift to project to.
 
-        print(target_age)
+        Returns
+        -------
+        GalaxyPopulation
+            A new galaxy population at the specified epoch.
+        """
 
+        # Calculate the age offset required to reach the target redshift.
+        if redshift < self.redshift:
+            raise ValueError(f"redshift {redshift} is less than the current redshift {self.redshift}.")
+        age_offset = (self.cosmology.lookback_time(redshift).to("Myr").value * Myr) - self.lookback_time
+
+        # Apply it to each Galaxy.
         new_galaxies = []
-
         for galaxy in self.galaxies:
 
-            new_stars = galaxy.stars.get_at_earlier_time(target_age)
+            new_stars = galaxy.stars.get_at_earlier_time(age_offset)
+            new_stars.surviving_mass = new_stars.calculate_surviving_mass(self.grid)
+            new_galaxies.append(Galaxy(stars=new_stars, redshift=redshift))
 
-            new_galaxies.append(Galaxy(stars=new_stars,redshift=redshift))
-
+        # Construct a new GalaxyPopulation from the new Galaxies.
         return GalaxyPopulation(
-            cosmology=self.cosmology,
-            grid=self.grid,
+            model=self.model,
+            minimum_stellar_mass=self.minimum_stellar_mass,
+            maximum_stellar_mass=self.maximum_stellar_mass,
             volume=self.volume,
+            grid=self.grid,
+            cosmology=self.cosmology,
             redshift=redshift,
-            galaxies=new_galaxies
+            random_seed=self.random_seed,
+            galaxies=new_galaxies,
+            final_surviving_masses=self.final_surviving_masses
         )
-
-
-
 
     def calculate_star_formation_rates(self, age=10*Myr):
         """
@@ -236,7 +297,7 @@ class GalaxyPopulation:
         sfr = []
         for galaxy in self.galaxies:
             sfr.append(galaxy.stars.calculate_average_sfr(t_range = (0, age)))
-        return np.array(sfr)
+        return unyt_array(sfr).to('Msun/yr')
 
     def calculate_combined_sfh(self):
         """Calculate the combined star formation history of all galaxies in the population."""
@@ -285,14 +346,14 @@ class GalaxyPopulation:
         if N > 100:
             print("Warning: Plotting SFHs for a large number of galaxies may result in a crowded plot.")
 
-
+        # Trust that Synthesizer returns the SFH in Msun.
         for galaxy in self.galaxies[:N]:
-            plt.plot(galaxy.stars.ages, galaxy.stars.sf_hist, alpha=0.1, c='k')
+            plt.plot(galaxy.stars.ages.to('Gyr').value, np.log10(galaxy.stars.sf_hist), 
+                     alpha=0.1, c='k')
 
-        plt.xlim((0, self.age_of_the_universe.to('yr').value))
-        # plt.ylim(log_flux_range)
-        # plt.xlabel(r'$\rm \lambda\ (Angstrom)$')
-        # plt.ylabel(r'$\rm \log_{10}(F_{\lambda}/erg\ s^{-1}\ cm^{-2}\ \AA^{-1})$')
+        plt.xlim((0, self.age_of_the_universe.to('Gyr').value))
+        plt.xlabel('Stellar Age / Gyr')
+        plt.ylabel('Stellar Mass Formed / M$_\odot$')
         plt.show()
 
     # def plot_sfh(self, rate=False):
@@ -335,40 +396,47 @@ class GalaxyPopulation:
 
 
 
-    def plot_stellar_mass_function(self, bin_width=0.1, step=True):
-
-        if hasattr(self.model, "galaxy_stellar_mass_function"):
-
-            # Range of masses
-            log_surviving_mass_bins = np.linspace(*np.log10(self._surviving_mass_range), 200)
-
-            # Evaluate LF
-            phi = self.model.galaxy_stellar_mass_function.phi_logx(log_surviving_mass_bins)
-
-            # Plot the input GSMF
-            plt.plot(
-                log_surviving_mass_bins, 
-                np.log10(phi), 
-                ls='-',
-                c='k',
-                alpha=0.2,
-                lw=2,
-                label=None,
-                )
+    def plot_stellar_mass_function(self, at_z0=False, bin_width=0.1, step=True):
+        """Plot the stellar mass function of the galaxy population.
         
-        # Plot histogram of sampled GSMF
+        Parameters
+        ----------
+        at_z0 : bool
+            If True, plot the z=0 stellar masses, otherwise plot at the 
+            current redshift.
+        bin_width : float
+            Dex bin width of the histogram bins.
+        step : bool
+            If True, plot the histogram as a step function, otherwise plot as a line.
+        """
+
+        # Get the appropriate masses.
+        if at_z0 == False:
+            mass_range = [i.to("Msun").value for i in self.surviving_mass_range]
+            surving_masses = self.surviving_masses.to("Msun").value
+            log_surviving_mass_bins = np.arange(*np.log10(mass_range), bin_width)
+        else:
+            mass_range = [i.to("Msun").value for i in self.final_surviving_mass_range]
+            surving_masses = self.final_surviving_masses.to("Msun").value
+            log_surviving_mass_bins = np.arange(*np.log10(mass_range), bin_width)
+
+            # If using z=0 masses, also plot the input GSMF if available.
+            if hasattr(self.model, "galaxy_stellar_mass_function"):
+                
+                # Evaluate LF
+                phi = self.model.galaxy_stellar_mass_function.phi_logx(log_surviving_mass_bins)
+
+                # Plot the input GSMF
+                plt.plot(log_surviving_mass_bins, np.log10(phi), ls='-', c='k', alpha=0.2, lw=2)
         
-        log_surviving_mass_bins = np.arange(*np.log10(self._surviving_mass_range), bin_width)
-
-        hist, edges = np.histogram(np.log10(self._surviving_masses), bins=log_surviving_mass_bins)
-
-        # Bin centres in linear space
+        # Construct a histogram of sampled masses.
+        hist, edges = np.histogram(np.log10(surving_masses), 
+                                   bins=log_surviving_mass_bins)
         bin_centres = 10**((edges[:-1] + edges[1:]) / 2)
 
-        # Convert histogram to φ(L)
+        # Convert to a GSMF and plot.
         phi_sampled = hist / (bin_width * self.volume.to("Mpc**3").value) 
 
-        # Plot histogram
         if step:
             plt.step(np.log10(bin_centres), np.log10(phi_sampled), c='k', alpha=1, lw=1, where='mid')
         else:
@@ -376,7 +444,6 @@ class GalaxyPopulation:
 
         plt.xlabel(r'$\rm \log_{10}(M_{\star}/M_{\odot})$')
         plt.ylabel(r'$\rm \log_{10}(\phi(M_{\star})/Mpc^{-3}\ dex^{-1})$')
-        plt.legend()
         plt.show()
 
     def plot_star_formation_rate_distribution_function(self, bin_width=0.1):
@@ -442,9 +509,9 @@ class GalaxyPopulation:
         sfrs = self.calculate_star_formation_rates()    
 
         # Extract stellar masses
-        stellar_masses = self._surviving_masses
+        stellar_masses = self.surviving_masses.to("Msun").value
 
-        plt.scatter(np.log10(stellar_masses), np.log10(sfrs), alpha=0.5, c='k', s=10)
+        plt.scatter(np.log10(stellar_masses), np.log10(sfrs.value), alpha=0.5, c='k', s=10)
 
         plt.xlabel(r'$\rm \log_{10}(M_{\star}/M_{\odot})$')
         plt.ylabel(r'$\rm \log_{10}(SFR/M_{\odot} yr^{-1})$')
@@ -454,13 +521,12 @@ class GalaxyPopulation:
 
     def plot_ssfr_vs_stellar_mass(self):
         
-        # Calculate SFRs
+        # Calculate sSFRs
         sfrs = self.calculate_star_formation_rates()    
-        ssfrs = sfrs / self._surviving_masses
-        # Extract stellar masses
-        stellar_masses = self._surviving_masses
+        ssfrs = sfrs / self.surviving_masses
+        ssfrs = ssfrs.to('Gyr**-1').value
 
-        plt.scatter(np.log10(stellar_masses), np.log10(ssfrs), alpha=0.5, c='k', s=10)
+        plt.scatter(np.log10(self.surviving_masses.to('Msun').value), np.log10(ssfrs), alpha=0.5, c='k', s=10)
 
         plt.xlabel(r'$\rm \log_{10}(M_{\star}/M_{\odot})$')
         plt.ylabel(r'$\rm \log_{10}(SSFR/Gyr^{-1})$')
@@ -512,32 +578,52 @@ class GalaxyPopulation:
 
 
 class MultiEpochGalaxyPopulation:
+    """A multi-epoch galaxy population based on a Synthpop model."""
 
-    def __init__(self, 
-        model=None,
-        minimum_stellar_mass=1e6*Msun,
-        maximum_stellar_mass=1e12*Msun,                 
-        volume = 1E6*Mpc**3,
-        grid=None,
-        cosmology=None,
-        redshifts=None,
-        random_seed=42,
-        same_galaxies_across_epochs=True,
-        ):
+    def __init__(self, model=None, minimum_stellar_mass=1e6*Msun, maximum_stellar_mass=1e12*Msun, 
+                 volume=1E6*Mpc**3, grid=None, cosmology=None, redshifts=None, random_seed=42,
+                 same_galaxies_across_epochs=True):
+        """__init__ method for the MultiEpochGalaxyPopulation.
         
+        Parameters
+        ----------
+        model : Model
+            The Synthpop model to use.
+        minimum_stellar_mass : unyt_quantity
+            The minimum stellar mass at z=0 to consider.
+        maximum_stellar_mass : unyt_quantity
+            The maximum stellar mass at z=0 to consider.
+        volume : unyt_quantity
+            The volume from which to sample the galaxy population.
+        grid : object
+            The Synthesizer SPS grid. Spectra are not required to build 
+            the population, so this can be loaded with 
+            ignore_spectra=True to reduce memory usage.
+        cosmology : astropy.cosmology object
+            The cosmology to assume.
+        redshifts : list[float]
+            The redshifts at which to construct populations.
+        random_seed : int
+            The random seed to use.
+        same_galaxies_across_epochs : bool
+            If True, the same galaxies are projected to earlier epochs.
+        """
+
+        # Assign the input parameters to attributes.
         self.model = model
         self.volume = volume
         self.grid = grid
         self.cosmology = cosmology
-        self.redshifts = redshifts
+        self.redshifts = np.sort(redshifts)
         self.random_seed = random_seed
-
-        self.final_redshift = self.redshifts[0]
+        self.same_galaxies_across_epochs = same_galaxies_across_epochs
 
         if same_galaxies_across_epochs:
-            self.age_of_the_universe = self.cosmology.age(self.redshifts[0]).to("Myr").value * Myr
+
+            warnings.warn("Due to Synthesizer quirks, projecting to an earlier time becomes less " \
+            "accurate after the first iteration.")
             
-            # Instantiate the galaxy population
+            # Instantiate the galaxy population at the lowest redshift.
             galpop = GalaxyPopulation(
                 model=self.model,
                 minimum_stellar_mass=minimum_stellar_mass, 
@@ -545,20 +631,23 @@ class MultiEpochGalaxyPopulation:
                 volume=volume,
                 grid=self.grid,
                 cosmology=self.cosmology,
-                redshift=self.final_redshift,
+                redshift=self.redshifts[0],
                 random_seed=self.random_seed)
 
             self.epochs = [galpop]
 
-            for redshift in self.redshifts:
+            # Project the population back to earlier epochs.
+            for redshift in self.redshifts[1:]:
                 epoch_population = galpop.project_to_earlier_epoch(redshift=redshift)
                 self.epochs.append(epoch_population)
 
+        # Otherwise, create a new population at each redshift.
         else:
             self.epochs = []
 
             for redshift in self.redshifts:
-                # Instantiate the galaxy population
+
+                # Instantiate the galaxy population.
                 galpop = GalaxyPopulation(
                     model=self.model,
                     minimum_stellar_mass=minimum_stellar_mass, 
@@ -566,10 +655,9 @@ class MultiEpochGalaxyPopulation:
                     volume=volume,
                     grid=self.grid,
                     cosmology=self.cosmology,
-                    redshift=self.final_redshift,
+                    redshift=redshift,
                     random_seed=self.random_seed)
-                epoch_population = galpop.project_to_earlier_epoch(redshift=redshift)
-                self.epochs.append(epoch_population)
+                self.epochs.append(galpop)
 
 
     def __str__(self):
@@ -583,24 +671,48 @@ class MultiEpochGalaxyPopulation:
         return pstr
     
 
-    def plot_stellar_mass_function(self, bin_width=0.1):
+    def plot_stellar_mass_function(self,  at_z0=False, bin_width=0.1, step=True):
+        """Plot the stellar mass function at each epoch.
+        
+        Parameters
+        ----------
+        at_z0 : bool
+            If True, plot the z=0 stellar masses, otherwise plot at each 
+            epoch redshift.
+        bin_width : float
+            Dex width of the histogram bins.
+        step : bool
+            If True, plot the histogram as a step function, otherwise plot as a line.
+        """
 
         for epoch, redshift in zip(self.epochs, self.redshifts):
 
-            # Plot histogram of sampled GSMF
-            
-            log_surviving_mass_bins = np.arange(*np.log10(epoch._surviving_mass_range), bin_width)
+            # Get the appropriate masses.
+            if at_z0 == False:
+                mass_range = [i.to("Msun").value for i in epoch.surviving_mass_range]
+                surving_masses = epoch.surviving_masses.to("Msun").value
+                log_surviving_mass_bins = np.arange(*np.log10(mass_range), bin_width)
+            else:
+                mass_range = [i.to("Msun").value for i in epoch.final_surviving_mass_range]
+                surving_masses = epoch.final_surviving_masses.to("Msun").value
+                log_surviving_mass_bins = np.arange(*np.log10(mass_range), bin_width)
 
-            hist, edges = np.histogram(np.log10(epoch._surviving_masses), bins=log_surviving_mass_bins)
-
-            # Bin centres in linear space
+            # Construct a histogram of sampled masses.
+            hist, edges = np.histogram(np.log10(surving_masses), bins=log_surviving_mass_bins)
             bin_centres = 10**((edges[:-1] + edges[1:]) / 2)
 
-            # Convert histogram to φ(L)
+            # Convert to a GSMF and plot.
             phi_sampled = hist / (bin_width * epoch.volume.to("Mpc**3").value) 
+            if step:
+                plt.step(np.log10(bin_centres), np.log10(phi_sampled), alpha=1, lw=1, where='mid', label=f'z={redshift}')
+            else:
+                plt.plot(np.log10(bin_centres), np.log10(phi_sampled), alpha=1, lw=1, label=f'z={redshift}')
 
-            # Plot histogram
-            plt.plot(np.log10(bin_centres), np.log10(phi_sampled), alpha=1, lw=1, label=f'z={redshift}')
+        # Try to plot the input GSMF if plotting at z=0.
+        if at_z0:
+            if hasattr(self.model, "galaxy_stellar_mass_function"):
+                phi = self.model.galaxy_stellar_mass_function.phi_logx(log_surviving_mass_bins)
+                plt.plot(log_surviving_mass_bins, np.log10(phi), ls='-', c='k', alpha=0.2, lw=2)
 
         plt.xlabel(r'$\rm \log_{10}(M_{\star}/M_{\odot})$')
         plt.ylabel(r'$\rm \log_{10}(\phi(M_{\star})/Mpc^{-3}\ dex^{-1})$')
