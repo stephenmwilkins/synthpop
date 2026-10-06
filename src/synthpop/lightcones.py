@@ -130,7 +130,13 @@ class Lightcone:
         self.rng = np.random.default_rng(random_seed)
 
         self.age_of_the_universe = self.cosmology.age(redshift_range[0]).to("yr").value * yr
-        self.model.sfh_parameters['max_age'] = self.age_of_the_universe
+        self.final_age_of_the_universe = self.cosmology.age(0).to("yr").value * yr
+
+        if self.model.sfh_parameters.get('max_age', None) is None:
+            self.model.sfh_parameters['max_age'] = self.final_age_of_the_universe
+        else:
+            if self.model.sfh_parameters['max_age'] > self.final_age_of_the_universe:
+                self.model.sfh_parameters['max_age'] = self.final_age_of_the_universe
 
         # Configure multiprocessing jobs and method.
         if not isinstance(n_jobs, int) or n_jobs == 0 or n_jobs < -1:
@@ -198,7 +204,7 @@ class Lightcone:
 
     def __add__(self, lightcone2):
         """
-        Add two Lightcone instances by concatenating their galaxy lists.
+        Add two Lightcone instances.
         
         Parameters
         ----------
@@ -238,7 +244,7 @@ class Lightcone:
         lightcone3 = Lightcone.__new__(Lightcone)
 
         # Copy over the attributes associated with these elements.
-        lightcone3.model = self.model
+        lightcone3.model = None
         lightcone3.grid = self.grid
         lightcone3.merger_grid = self.merger_grid
         lightcone3.cosmology = self.cosmology
@@ -246,6 +252,7 @@ class Lightcone:
         lightcone3.solid_angle = self.solid_angle
         lightcone3.random_seed = self.random_seed
         lightcone3.age_of_the_universe = self.age_of_the_universe
+        lightcone3.final_age_of_the_universe = self.final_age_of_the_universe
 
         # Add the galaxy lists and update the number of galaxies.
         lightcone3.galaxies = self.galaxies + lightcone2.galaxies
