@@ -1,2 +1,2 @@
 from .lightcones import Lightcone
-from .galaxy_populations import GalaxyPopulation
+from .galaxy_populations import GalaxyPopulation, MultiEpochGalaxyPopulation

@@ -116,7 +116,7 @@ class BinnedDistributionFunction:
 
                 samples.append(val)
 
-        return 10**np.asarray(samples)
+        return unyt_array(10**np.asarray(samples), self.x_units)
 
 
     def plot(self, xmin=None, xmax=None, ylimits=None, grid=True, observations=None, samples=None, bins=30, volume=None):
@@ -242,9 +242,9 @@ class ParametricDistributionFunction:
             if N > 0:
                 x_samples.append(np.random.uniform(x_bins[i], x_bins[i+1], N))
         if x_samples:
-            return np.concatenate(x_samples)
+            return unyt_array(np.concatenate(x_samples), self.x_units)
         else:
-            return np.array([])
+            return unyt_array([], self.x_units)
 
 
     def calculate_number_density(self, xmin=0.0, xmax=np.inf):
